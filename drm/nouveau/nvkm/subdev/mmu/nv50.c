@@ -33,6 +33,79 @@ struct nv50_mmu_priv {
 	struct nvkm_mmu base;
 };
 
+
+#define __nv_chipset_target__ 0x50
+#include "nv_mmu_hw.h"
+
+/*
+ * "D" is a (sub)device, given a byte address range:
+ *
+ *    #define NV_D <high addr>:<low addr>
+ *
+ * "R" is a register defined by a byte offset:
+ *
+ *    #define NV_D_R 0x00400100
+ *
+ * "F" is a field definition, given as a high and low bit:
+ *
+ *    #define NV_D_R_F  2:1
+ *
+ * "C" is a constant, used for the specific register and field.
+ *
+ *    #define NV_PFOO_BAR_STATUS_OK  1
+ *    #define NV_PFOO_BAR_STATUS_BAD 3
+ *
+ *
+ * For ranges (bit, or address) use a trigraph to access specific bounds:
+ * E.g.: given 'x : y'
+ *
+ *  high := ( 1 ? x : y ) -> ( 1 ? x : y ) -> x
+ *  low  := ( 0 ? x : y ) -> ( 0 ? x : y ) -> y
+ *
+ *
+ * The "D" "R" "F" and "C" elements are constructed so that macro token
+ * concatentation can be used in intermediate steps... Consider:
+ *
+ * #define field_lo(D,R,F)      ( 0 ? NV_ ## D ## R ## F )
+ * #define field_hi(D,R,F)      ( 1 ? NV_ ## D ## R ## F )
+ * #define field_bits(D,R,F)    ( 1 + field_hi(D,R,F) - field_lo(D,R,F) )
+ * #define field_shift(D,R,F)   ( field_lo(D,R,F) )
+ * #define field_mask (D,R,F)   ( ( 1 << field_bits(D,R,F) ) - 1 )
+ * #define field_val  (D,R,F,x) ( ( x & field_mask(D,R,F)) >> field_shift(D,R,F) )
+ * #define place_field(D,R,F,V) ( ( NV_## D ## R ## F ## V) << field_shift(D,R,F) )
+ *
+ * In particular, without the concatenation-suitable hierarchy within the name, a
+ * place_field invocation would be longer (and more error prone).  Consider:
+ *
+ *     place_field(D, DR, DRF, DRFV)
+ * vs.
+ *     place_field(D, R, F, V)
+ *
+ * The example above is fairly tame, but consider:
+ *
+ *     place_field(NV_PFIFO, NV_PFIFO_STATUS, NV_PFIFO_STATUS_CE, NV_PFIFO_STATUS_CE_OK)
+ * vs.
+ *     place_field(_PFIFO, _STATUS, _CE, _OK);
+ */
+
+#define f_lo     (D,R,F)   (0 ? NV_ ## D ## R ## F)
+#define f_hi     (D,R,F)   (1 ? NV_ ## D ## R ## F)
+#define f_bits   (D,R,F)   (1 + f_hi(D,R,F) - f_lo(D,R,F))
+#define f_shift  (D,R,F)   f_lo(D,R,F)
+#define f_mask   (D,R,F) (((1 << f_bits(D,R,F)) - 1) << f_shift(D,R,F))
+#define f_lmask  (D,R,F)
+#define f_gv   (D,R,F,x) (((x) &  f_mask(D,R,F)) >> f_shift(D,R,F))
+#define f_pv   (D,R,F,v) (((v) & f_lmask(D,R,F)) << f_shift(D,R,F))
+#define f_pc   (D,R,F,C) ((NV_##D##R##F##C) << f_shift(D,R,F))
+
+/*
+ * f_mask: field, in-place bit mask
+ * f_lmask: field, logical (width) bit mask
+ * f_gv : field, get value
+ * f_pv : field, place value
+ * f_pc : field, place constant
+ */
+
 static void
 nv50_vm_map_pgt(struct nvkm_gpuobj *pgd, u32 pde, struct nvkm_gpuobj *pgt[2])
 {
@@ -40,21 +113,22 @@ nv50_vm_map_pgt(struct nvkm_gpuobj *pgd, u32 pde, struct nvkm_gpuobj *pgt[2])
 	u32 coverage = 0;
 
 	if (pgt[0]) {
-		phys = 0x00000003 | pgt[0]->addr; /* present, 4KiB pages */
+		phys = f_sv(_MMU, _PDE, _TYPE, _4K) | pgt[0]->addr;
 		coverage = (pgt[0]->size >> 3) << 12;
 	} else
 	if (pgt[1]) {
-		phys = 0x00000001 | pgt[1]->addr; /* present */
+		phys = f_sv(_MMU, _PDE, _TYPE, _64K) | pgt[1]->addr;
 		coverage = (pgt[1]->size >> 3) << 16;
 	}
 
 	if (phys & 1) {
 		if (coverage <= 32 * 1024 * 1024)
-			phys |= 0x60;
+			phys |= f_pv(_MMU, _PDE, _4K_PDE_SIZE, _8K_ENTRIES);
 		else if (coverage <= 64 * 1024 * 1024)
-			phys |= 0x40;
+			phys |= f_pv(_MMU, _PDE, _4K_PDE_SIZE, _16K_ENTRIES);
 		else if (coverage <= 128 * 1024 * 1024)
-			phys |= 0x20;
+			phys |= f_pv(_MMU, _PDE, _4K_PDE_SIZE, _32K_ENTRIES);
+		/* else phys |= pfv(_MMU, _PDE, _4K_PDE_SIZE, _128K_ENTRIES); */
 	}
 
 	nv_wo32(pgd, (pde * 8) + 0, lower_32_bits(phys));
@@ -64,7 +138,7 @@ nv50_vm_map_pgt(struct nvkm_gpuobj *pgd, u32 pde, struct nvkm_gpuobj *pgt[2])
 static inline u64
 vm_addr(struct nvkm_vma *vma, u64 phys, u32 memtype, u32 target)
 {
-	phys |= 1; /* present */
+	phys |= f_pc(_MMU, _PTE, _VALID, _TRUE);
 	phys |= (u64)memtype << 40;
 	phys |= target << 4;
 	if (vma->access & NV_MEM_ACCESS_SYS)
@@ -125,7 +199,7 @@ static void
 nv50_vm_map_sg(struct nvkm_vma *vma, struct nvkm_gpuobj *pgt,
 	       struct nvkm_mem *mem, u32 pte, u32 cnt, dma_addr_t *list)
 {
-	u32 target = (vma->access & NV_MEM_ACCESS_NOSNOOP) ? 3 : 2;
+	u32 target = (vma->access & NV_MEM_ACCESS_NOSNOOP) ? NV_MMU_PTE_APERTURE_SYSTEM_NON_COHERENT_MEMORY : NV_MMU_PTE_APERTURE_SYSTEM_COHERENT_MEMORY;
 	pte <<= 3;
 	while (cnt--) {
 		u64 phys = vm_addr(vma, (u64)*list++, mem->memtype, target);
