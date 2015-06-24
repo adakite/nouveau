@@ -88,15 +88,14 @@ struct nv50_mmu_priv {
  *     place_field(_PFIFO, _STATUS, _CE, _OK);
  */
 
-#define f_lo     (D,R,F)   (0 ? NV_ ## D ## R ## F)
-#define f_hi     (D,R,F)   (1 ? NV_ ## D ## R ## F)
-#define f_bits   (D,R,F)   (1 + f_hi(D,R,F) - f_lo(D,R,F))
-#define f_shift  (D,R,F)   f_lo(D,R,F)
-#define f_mask   (D,R,F) (((1 << f_bits(D,R,F)) - 1) << f_shift(D,R,F))
-#define f_lmask  (D,R,F)
-#define f_gv   (D,R,F,x) (((x) &  f_mask(D,R,F)) >> f_shift(D,R,F))
-#define f_pv   (D,R,F,v) (((v) & f_lmask(D,R,F)) << f_shift(D,R,F))
-#define f_pc   (D,R,F,C) ((NV_##D##R##F##C) << f_shift(D,R,F))
+#define f_lo_bit(D,R,F)       (0 ? NV_##D##_##R##_##F)
+#define f_hi_bit(D,R,F)       (1 ? NV_##D##_##R##_##F)
+#define f_bits(D,R,F)         (1 + f_hi_bit(D,R,F) - f_lo_bit(D,R,F))
+#define f_shift(D,R,F)        f_lo_bit(D,R,F)
+#define f_mask(D,R,F)         ((1 << f_bits(D,R,F)) - 1)
+#define f_get(D,R,F,g)        (((g) >> f_shift(D,R,F)) & f_mask(D,R,F))
+#define f_set(D,R,F,s)        (((s) & f_mask(D,R,F)) << f_shift(D,R,F))
+#define f_set_val(D,R,F,V)    ((NV_##D##_##R##_##F##_##V) << f_shift(D,R,F))
 
 /*
  * f_mask: field, in-place bit mask
@@ -113,22 +112,22 @@ nv50_vm_map_pgt(struct nvkm_gpuobj *pgd, u32 pde, struct nvkm_gpuobj *pgt[2])
 	u32 coverage = 0;
 
 	if (pgt[0]) {
-		phys = f_sv(_MMU, _PDE, _TYPE, _4K) | pgt[0]->addr;
+		phys = f_set_v(MMU,PDE,TYPE,4K) | pgt[0]->addr;
 		coverage = (pgt[0]->size >> 3) << 12;
 	} else
 	if (pgt[1]) {
-		phys = f_sv(_MMU, _PDE, _TYPE, _64K) | pgt[1]->addr;
+		phys = f_set_v(MMU,PDE,TYPE,64K) | pgt[1]->addr;
 		coverage = (pgt[1]->size >> 3) << 16;
 	}
 
 	if (phys & 1) {
 		if (coverage <= 32 * 1024 * 1024)
-			phys |= f_pv(_MMU, _PDE, _4K_PDE_SIZE, _8K_ENTRIES);
+			phys |= f_set_v(MMU, PDE, 4K_PDE_SIZE, 8K_ENTRIES);
 		else if (coverage <= 64 * 1024 * 1024)
-			phys |= f_pv(_MMU, _PDE, _4K_PDE_SIZE, _16K_ENTRIES);
+			phys |= f_set_v(MMU, PDE, 4K_PDE_SIZE, 16K_ENTRIES);
 		else if (coverage <= 128 * 1024 * 1024)
-			phys |= f_pv(_MMU, _PDE, _4K_PDE_SIZE, _32K_ENTRIES);
-		/* else phys |= pfv(_MMU, _PDE, _4K_PDE_SIZE, _128K_ENTRIES); */
+			phys |= f_set_v(MMU, PDE, 4K_PDE_SIZE, 32K_ENTRIES);
+		/* else phys |= f_set_v(MMU, PDE, 4K_PDE_SIZE, 128K_ENTRIES); */
 	}
 
 	nv_wo32(pgd, (pde * 8) + 0, lower_32_bits(phys));
@@ -138,7 +137,7 @@ nv50_vm_map_pgt(struct nvkm_gpuobj *pgd, u32 pde, struct nvkm_gpuobj *pgt[2])
 static inline u64
 vm_addr(struct nvkm_vma *vma, u64 phys, u32 memtype, u32 target)
 {
-	phys |= f_pc(_MMU, _PTE, _VALID, _TRUE);
+	phys |= f_set(MMU, PTE, VALID, 1);
 	phys |= (u64)memtype << 40;
 	phys |= target << 4;
 	if (vma->access & NV_MEM_ACCESS_SYS)
@@ -258,6 +257,7 @@ nv50_vm_flush(struct nvkm_vm *vm)
 			continue;
 		}
 
+        NV_PFB_PRI_MMU_CTRL
 		nv_wr32(priv, 0x100c80, (vme << 16) | 1);
 		if (!nv_wait(priv, 0x100c80, 0x00000001, 0x00000000))
 			nv_error(priv, "vm flush timeout: engine %d\n", vme);

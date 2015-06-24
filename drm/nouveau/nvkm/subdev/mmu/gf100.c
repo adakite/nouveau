@@ -174,16 +174,16 @@ gf100_vm_flush(struct nvkm_vm *vm)
 		/* looks like maybe a "free flush slots" counter, the
 		 * faster you write to 0x100cbc to more it decreases
 		 */
-		if (!nv_wait_ne(priv, 0x100c80, 0x00ff0000, 0x00000000)) {
+		if (!nv_wait_ne(priv, NV_PFB_PRI_MMU_CTRL, f_v(PFB,PRI_MMU_CTRL,PRI_FIFO_SPACE), 0x00000000)) {
 			nv_error(priv, "vm timeout 0: 0x%08x %d\n",
-				 nv_rd32(priv, 0x100c80), type);
+				 nv_rd32(priv, NV_PFB_PRI_MMU_CTRL), type);
 		}
 
-		nv_wr32(priv, 0x100cb8, vpgd->obj->addr >> 8);
-		nv_wr32(priv, 0x100cbc, 0x80000000 | type);
+		nv_wr32(priv, NV_PFB_PRI_MMU_INVALIDATE_PDB, vpgd->obj->addr >> 8);
+		nv_wr32(priv, NV_PFB_PRI_MMU_INVALIDATE, f_v(PFB,PRI_MMU_INVALIDATE,TRIGGER) | type);
 
 		/* wait for flush to be queued? */
-		if (!nv_wait(priv, 0x100c80, 0x00008000, 0x00008000)) {
+		if (!nv_wait(priv, NV_PFB_PRI_MMU_CTRL, f_v(PFB,PRI_MMU_CTRL,PRI_FIFO_EMPTY), 0x00008000)) {
 			nv_error(priv, "vm timeout 1: 0x%08x %d\n",
 				 nv_rd32(priv, 0x100c80), type);
 		}
